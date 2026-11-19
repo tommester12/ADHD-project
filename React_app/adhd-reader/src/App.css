@@ -1,0 +1,592 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background-color: #f8f7f3;
+  color: #1f2937;
+}
+
+/* 70% Left Reader / 30% Right Menu (Full Viewport Height) */
+.app-layout {
+  display: flex;
+  height: 100vh;
+  width: 100%;
+  overflow: hidden;
+}
+
+/* --- LEFT PANE: TEXT READER (70%) --- */
+/* Generous left/right padding gives parted words plenty of room to glide without clipping */
+.reader-pane {
+  flex: 0 0 70%;
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 48px 76px;
+  background-color: #fbfaf6;
+  border-right: 1px solid #e5e2d8;
+  position: relative;
+}
+
+.reader-content {
+  width: 100%;
+  max-width: 72ch;
+  margin: 0 auto;
+  line-height: 2.25;
+  letter-spacing: 0.01em;
+  color: #262930;
+}
+
+.reader-paragraph {
+  margin: 0 0 1.6em 0;
+}
+
+/* Fixed outer span keeps line breaks & bounding boxes locked */
+.word-wrapper {
+  display: inline-block;
+  padding: 0 0.04em;
+  position: relative;
+}
+
+/* Inner span handles GPU-only translateX (parting) + scale (zoom) with zero reflow */
+.word-inner {
+  display: inline-block;
+  position: relative;
+  transform-origin: center center;
+  transform: translateX(var(--shift-x, 0px)) scale(var(--word-scale, 1));
+  border-radius: 5px;
+  padding: 0.02em 0.08em;
+  transition: transform 140ms cubic-bezier(0.2, 0.8, 0.2, 1),
+              opacity 150ms ease,
+              background-color 150ms ease,
+              color 150ms ease,
+              box-shadow 150ms ease,
+              text-shadow 130ms ease;
+  will-change: transform;
+}
+
+/* 1. Zoom (Controlled by Zoom Strength slider; anchor-parting keeps neighbors clear) */
+.reader-content.fx-zoom .word-inner.focus-1 {
+  --word-scale: var(--zoom-1, 1.15);
+  z-index: 3;
+}
+.reader-content.fx-zoom .word-inner.focus-2 {
+  --word-scale: var(--zoom-2, 1.08);
+  z-index: 2;
+}
+.reader-content.fx-zoom .word-inner.focus-3 {
+  --word-scale: var(--zoom-3, 1.04);
+  z-index: 1;
+}
+
+/* 2. Bold (ONLY active when Bold checkbox is ON; 0px width change -> zero line wrap!) */
+.reader-content.fx-bold .word-inner.focus-1 {
+  text-shadow: 0.45px 0 0 currentColor;
+}
+
+/* 3. Text Color (3 graded shades of chosen color) */
+.reader-content.fx-text-color .word-inner.focus-1 {
+  color: var(--fx-text-1, #2563eb);
+}
+.reader-content.fx-text-color .word-inner.focus-2 {
+  color: var(--fx-text-2, #60a5fa);
+}
+.reader-content.fx-text-color .word-inner.focus-3 {
+  color: var(--fx-text-3, #93c5fd);
+}
+
+/* 4. Background Highlight (Translucent highlighter tints) */
+.reader-content.fx-bg-highlight .word-inner.focus-1 {
+  background-color: var(--fx-bg-1, rgba(253, 224, 71, 0.68));
+}
+.reader-content.fx-bg-highlight .word-inner.focus-2 {
+  background-color: var(--fx-bg-2, rgba(253, 224, 71, 0.36));
+}
+.reader-content.fx-bg-highlight .word-inner.focus-3 {
+  background-color: var(--fx-bg-3, rgba(253, 224, 71, 0.18));
+}
+
+/* 5. Underline (Zero-jitter inset bottom bar in 3 shades) */
+.reader-content.fx-underline .word-inner.focus-1 {
+  box-shadow: inset 0 -2.5px 0 0 var(--fx-ul-1, #2563eb);
+  border-radius: 3px 3px 0 0;
+}
+.reader-content.fx-underline .word-inner.focus-2 {
+  box-shadow: inset 0 -2px 0 0 var(--fx-ul-2, #60a5fa);
+  border-radius: 3px 3px 0 0;
+}
+.reader-content.fx-underline .word-inner.focus-3 {
+  box-shadow: inset 0 -1.5px 0 0 var(--fx-ul-3, #93c5fd);
+  border-radius: 3px 3px 0 0;
+}
+
+/* 6A. Dim Surroundings (All non-active words) */
+.reader-content.fx-dim.has-active-focus .word-inner {
+  opacity: 0.4;
+}
+.reader-content.fx-dim.has-active-focus .word-inner.focus-1 {
+  opacity: 1;
+}
+.reader-content.fx-dim.has-active-focus .word-inner.focus-2 {
+  opacity: 0.85;
+}
+.reader-content.fx-dim.has-active-focus .word-inner.focus-3 {
+  opacity: 0.68;
+}
+
+/* 6B. Dim ONLY previous words when "Only dim previous words" is checked */
+.reader-content.fx-dim-prev.has-active-focus .word-inner.word-prev {
+  opacity: 0.4;
+}
+
+/* Guided Mode Read-Word Fade (always overrides Dim Surroundings) */
+.reader-content .word-inner.word-read,
+.reader-content.fx-dim.has-active-focus .word-inner.word-read,
+.reader-content.fx-dim-prev.has-active-focus .word-inner.word-read {
+  opacity: var(--read-opacity, 0.22);
+}
+
+/* Live Dynamic Guidance jump charging bar on the held word */
+.word-jump-bar {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2.5px;
+  width: 0%;
+  background-color: #2563eb;
+  border-radius: 2px;
+  pointer-events: none;
+  animation: jumpCharge var(--jump-duration, 3s) linear forwards;
+}
+
+@keyframes jumpCharge {
+  from {
+    width: 0%;
+  }
+  to {
+    width: 100%;
+  }
+}
+
+/* Floating Live Gaze Debug Dot */
+.gaze-debug-dot {
+  position: fixed;
+  top: -12px;
+  left: -12px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 2px solid #22c55e;
+  background-color: rgba(34, 197, 94, 0.2);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 999;
+  will-change: transform;
+}
+
+/* --- RIGHT PANE: INTERACTION MENU (30%) --- */
+.control-pane {
+  flex: 0 0 30%;
+  height: 100%;
+  overflow-y: auto;
+  background-color: #ffffff;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.panel-header h1 {
+  margin: 0;
+  font-size: 1.35rem;
+  color: #111827;
+}
+
+.panel-header .subtitle {
+  margin: 4px 0 0;
+  font-size: 0.85rem;
+  color: #6b7280;
+}
+
+.panel-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid #f0f0ec;
+}
+
+.panel-section h2 {
+  margin: 0;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #6b7280;
+}
+
+.segmented-control {
+  display: flex;
+  background: #f3f4f6;
+  padding: 4px;
+  border-radius: 8px;
+  gap: 4px;
+}
+
+.segmented-control button {
+  flex: 1;
+  border: none;
+  background: transparent;
+  padding: 8px;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  color: #4b5563;
+}
+
+.segmented-control button.active {
+  background: #ffffff;
+  color: #111827;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.status-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82rem;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #9ca3af;
+}
+.status-connected .status-dot { background: #22c55e; }
+.status-connecting .status-dot { background: #f59e0b; }
+.status-disconnected .status-dot { background: #ef4444; }
+
+.camera-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.camera-picker-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.82rem;
+  color: #374151;
+}
+
+.btn-link {
+  background: none;
+  border: none;
+  color: #2563eb;
+  font-size: 0.8rem;
+  cursor: pointer;
+  padding: 0;
+}
+
+.camera-select {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid #d1d5db;
+  background-color: #ffffff;
+  font-size: 0.85rem;
+  color: #111827;
+}
+
+.camera-alert {
+  font-size: 0.78rem;
+  padding: 8px 10px;
+  border-radius: 6px;
+  line-height: 1.35;
+}
+.camera-alert.error { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
+.camera-alert.warning { background: #fffbeb; color: #b45309; border: 1px solid #fde68a; }
+.camera-alert.info { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
+
+.btn-primary,
+.btn-secondary {
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  border: none;
+  transition: background-color 120ms ease;
+}
+
+.btn-primary {
+  background-color: #2563eb;
+  color: white;
+}
+.btn-primary:hover {
+  background-color: #1d4ed8;
+}
+
+.btn-secondary {
+  background-color: #f3f4f6;
+  color: #1f2937;
+  border: 1px solid #e5e7eb;
+}
+.btn-secondary:hover {
+  background-color: #e5e7eb;
+}
+
+.full-width {
+  width: 100%;
+}
+
+.button-row {
+  display: flex;
+  gap: 8px;
+}
+.button-row button {
+  flex: 1;
+}
+
+.paste-container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.paste-container textarea {
+  width: 100%;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid #d1d5db;
+  font-family: inherit;
+  font-size: 0.88rem;
+  resize: vertical;
+}
+
+/* Composable Effects List */
+.effect-toggle-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.effect-toggle-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+  background-color: #ffffff;
+}
+
+.effect-toggle-card.selected {
+  border-color: #2563eb;
+  background-color: #eff6ff;
+}
+
+.effect-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.effect-toggle-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  cursor: pointer;
+  flex: 1;
+}
+
+.effect-toggle-label strong {
+  display: block;
+  font-size: 0.86rem;
+  color: #111827;
+}
+
+.effect-toggle-label span {
+  display: block;
+  font-size: 0.75rem;
+  color: #6b7280;
+  margin-top: 1px;
+}
+
+.effect-subcontrol {
+  padding-top: 6px;
+  border-top: 1px solid #dbeafe;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.inline-color-chip {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  border-radius: 6px;
+  border: 2px solid #ffffff;
+  box-shadow: 0 0 0 1px #cbd5e1;
+  cursor: pointer;
+  position: relative;
+  overflow: hidden;
+  transition: opacity 150ms ease, transform 120ms ease;
+}
+
+.inline-color-chip:hover {
+  transform: scale(1.08);
+}
+
+.inline-color-chip.muted {
+  opacity: 0.45;
+}
+
+.inline-color-chip input[type="color"] {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.guided-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 8px;
+  background-color: #f9fafb;
+  border: 1px solid #e5e7eb;
+}
+
+.progress-track {
+  width: 100%;
+  height: 6px;
+  background-color: #e5e7eb;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background-color: #2563eb;
+  border-radius: 999px;
+  transition: width 150ms ease;
+}
+
+.control-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.control-field label {
+  font-size: 0.84rem;
+  color: #374151;
+}
+
+.font-size-stepper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.step-btn {
+  padding: 2px 8px;
+  border-radius: 5px;
+  border: 1px solid #d1d5db;
+  background: #f9fafb;
+  color: #1f2937;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.step-btn:hover {
+  background: #e5e7eb;
+}
+
+.slider-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.slider-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.84rem;
+  color: #374151;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.panel-footer {
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid #f0f0ec;
+}
+
+.debug-pill {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.84rem;
+  background: #f9fafb;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+}
+
+/* --- CALIBRATION OVERLAY --- */
+.calibration-overlay {
+  position: fixed;
+  inset: 0;
+  background-color: #0b0f19;
+  color: #ffffff;
+  z-index: 2000;
+}
+
+.calibration-instructions {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  max-width: 420px;
+}
+
+.calibration-instructions h2 {
+  margin: 0 0 8px;
+}
+
+.calibration-instructions p {
+  color: #cbd5e1;
+  margin: 0 0 18px;
+}
+
+.calibration-dot {
+  position: absolute;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background-color: #ef4444;
+  border: 4px solid #ffffff;
+  transform: translate(-50%, -50%);
+  cursor: pointer;
+  box-shadow: 0 0 20px rgba(239, 68, 68, 0.75);
+}
