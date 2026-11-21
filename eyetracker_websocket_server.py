@@ -40,9 +40,31 @@ def resource_path(relative_path: str) -> str:
     return os.path.join(base_path, relative_path)
 
 
-MODEL_PATH = resource_path(os.path.join('facetracking_model', 'face_landmarker.task'))
-if not os.path.exists(MODEL_PATH):
-    MODEL_PATH = r'C:\Users\tomme\Desktop\ADHD project\eyetracker\facetracking_model\face_landmarker.task'
+def find_model_path() -> str:
+    """Finds face_landmarker.task automatically across Windows, macOS, and PyInstaller builds."""
+    candidates = [
+        resource_path(os.path.join('facetracking_model', 'face_landmarker.task')),
+        resource_path(os.path.join('eyetracker', 'facetracking_model', 'face_landmarker.task')),
+        resource_path('face_landmarker.task'),
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+
+    # Last resort: search subdirectories of the script folder
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    for root, _, files in os.walk(script_dir):
+        if 'face_landmarker.task' in files:
+            return os.path.join(root, 'face_landmarker.task')
+
+    raise FileNotFoundError(
+        "Could not find 'face_landmarker.task'. Place it in 'facetracking_model/face_landmarker.task' "
+        "next to this script."
+    )
+
+
+MODEL_PATH = find_model_path()
+print(f'[Model] Using {MODEL_PATH}')
 
 
 def get_camera_backend() -> int:
