@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { playStrayChime } from '../utils/soundAlert';
 
 const INDIVIDUAL_EFFECTS = [
@@ -95,13 +95,62 @@ export default function ControlPanel({
   isCalibrated,
   onSelectCamera,
   onRefreshCameras,
+  subscribePreview,
+  setPreviewEnabled,
   currentWordInfo = { index: null, word: null },
   onLoadText,
   onStartCalibration,
 }) {
   const fileInputRef = useRef(null);
+  const previewImgRef = useRef(null);
+
   const [showPasteBox, setShowPasteBox] = useState(false);
   const [pasteValue, setPasteValue] = useState('');
+  const [showPreview, setShowPreview] = useState(true);
+  const [previewInfo, setPreviewInfo] = useState({
+    hasFrame: false,
+    faceDetected: false,
+    blinking: false,
+  });
+
+  // Notify Python when toggling live preview on/off
+  useEffect(() => {
+    if (inputMode === 'websocket' && connectionStatus === 'connected' && setPreviewEnabled) {
+      setPreviewEnabled(showPreview);
+    }
+  }, [inputMode, connectionStatus, showPreview, setPreviewEnabled]);
+
+  // Clear preview placeholder while switching cameras or disconnected
+  useEffect(() => {
+    if (connectionStatus !== 'connected' || cameraStatus === 'switching') {
+      setPreviewInfo({ hasFrame: false, faceDetected: false, blinking: false });
+    }
+  }, [connectionStatus, cameraStatus]);
+
+  // Update <img> src directly via DOM ref (~12 FPS, zero parent re-renders)
+  useEffect(() => {
+    if (!subscribePreview || !showPreview || inputMode !== 'websocket') return;
+
+    return subscribePreview(({ image, faceDetected, blinking }) => {
+      if (previewImgRef.current && image) {
+        previewImgRef.current.src = `data:image/jpeg;base64,${image}`;
+      }
+      setPreviewInfo((prev) => {
+        if (
+          prev.hasFrame &&
+          prev.faceDetected === Boolean(faceDetected) &&
+          prev.blinking === Boolean(blinking)
+        ) {
+          return prev;
+        }
+        return {
+          hasFrame: true,
+          faceDetected: Boolean(faceDetected),
+          blinking: Boolean(blinking),
+        };
+      });
+    });
+  }, [subscribePreview, showPreview, inputMode]);
 
   const handleFileUpload = (e) => {
     const file = e.target.files?.[0];
@@ -191,6 +240,57 @@ export default function ControlPanel({
             ) : (
               <div className="camera-alert warning">
                 No cameras detected. Plug in a webcam and click Refresh.
+              </div>
+            )}
+
+            {/* Live Camera Preview */}
+            {cameras.length > 0 && (
+              <div className="camera-preview-section">
+                <div className="camera-picker-header">
+                  <span>Camera Preview</span>
+                  <button
+                    type="button"
+                    className="btn-link"
+                    onClick={() => setShowPreview((v) => !v)}
+                  >
+                    {showPreview ? 'Hide' : 'Show'}
+                  </button>
+                </div>
+
+                {showPreview && (
+                  <div className="camera-preview-box">
+                    <img
+                      ref={previewImgRef}
+                      alt="Selected camera preview"
+                      className="camera-preview-img"
+                      style={{ display: previewInfo.hasFrame ? 'block' : 'none' }}
+                    />
+
+                    {!previewInfo.hasFrame && (
+                      <div className="camera-preview-placeholder">
+                        Waiting for camera video...
+                      </div>
+                    )}
+
+                    {previewInfo.hasFrame && (
+                      <span
+                        className={`preview-status-pill ${
+                          !previewInfo.faceDetected
+                            ? 'bad'
+                            : previewInfo.blinking
+                            ? 'warn'
+                            : 'good'
+                        }`}
+                      >
+                        {!previewInfo.faceDetected
+                          ? 'No Face Detected'
+                          : previewInfo.blinking
+                          ? 'Blinking'
+                          : 'Face & Eyes Locked'}
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
@@ -428,7 +528,6 @@ export default function ControlPanel({
                   )}
                 </div>
 
-                {/* Zoom Strength Slider */}
                 {item.key === 'zoom' && isChecked && (
                   <div className="effect-subcontrol">
                     <div className="slider-label">
@@ -446,7 +545,6 @@ export default function ControlPanel({
                   </div>
                 )}
 
-                {/* Dim Previous Words Only Toggle */}
                 {item.key === 'dimSurroundings' && isChecked && (
                   <div className="effect-subcontrol">
                     <label className="checkbox-row">

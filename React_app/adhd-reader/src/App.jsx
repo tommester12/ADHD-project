@@ -120,6 +120,8 @@ export default function App() {
     selectCamera,
     refreshCameras,
     subscribeGaze,
+    subscribePreview,
+    setPreviewEnabled,
     sendCommand,
   } = useGazeTracker({ wsUrl: 'ws://localhost:8765' });
 
@@ -238,6 +240,8 @@ export default function App() {
         isCalibrated={isCalibrated}
         onSelectCamera={selectCamera}
         onRefreshCameras={refreshCameras}
+        subscribePreview={subscribePreview}
+        setPreviewEnabled={setPreviewEnabled}
         currentWordInfo={currentWordInfo}
         onLoadText={setText}
         onStartCalibration={() => setIsCalibrating(true)}

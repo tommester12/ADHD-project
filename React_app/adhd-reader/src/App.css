@@ -18,7 +18,6 @@ body {
 }
 
 /* --- LEFT PANE: TEXT READER (70%) --- */
-/* Generous left/right padding gives parted words plenty of room to glide without clipping */
 .reader-pane {
   flex: 0 0 70%;
   height: 100%;
@@ -67,7 +66,7 @@ body {
   will-change: transform;
 }
 
-/* 1. Zoom (Controlled by Zoom Strength slider; anchor-parting keeps neighbors clear) */
+/* 1. Zoom */
 .reader-content.fx-zoom .word-inner.focus-1 {
   --word-scale: var(--zoom-1, 1.15);
   z-index: 3;
@@ -81,12 +80,12 @@ body {
   z-index: 1;
 }
 
-/* 2. Bold (ONLY active when Bold checkbox is ON; 0px width change -> zero line wrap!) */
+/* 2. Bold (0px width change -> zero line wrap!) */
 .reader-content.fx-bold .word-inner.focus-1 {
   text-shadow: 0.45px 0 0 currentColor;
 }
 
-/* 3. Text Color (3 graded shades of chosen color) */
+/* 3. Text Color */
 .reader-content.fx-text-color .word-inner.focus-1 {
   color: var(--fx-text-1, #2563eb);
 }
@@ -97,7 +96,7 @@ body {
   color: var(--fx-text-3, #93c5fd);
 }
 
-/* 4. Background Highlight (Translucent highlighter tints) */
+/* 4. Background Highlight */
 .reader-content.fx-bg-highlight .word-inner.focus-1 {
   background-color: var(--fx-bg-1, rgba(253, 224, 71, 0.68));
 }
@@ -108,7 +107,7 @@ body {
   background-color: var(--fx-bg-3, rgba(253, 224, 71, 0.18));
 }
 
-/* 5. Underline (Zero-jitter inset bottom bar in 3 shades) */
+/* 5. Underline */
 .reader-content.fx-underline .word-inner.focus-1 {
   box-shadow: inset 0 -2.5px 0 0 var(--fx-ul-1, #2563eb);
   border-radius: 3px 3px 0 0;
@@ -136,7 +135,7 @@ body {
   opacity: 0.68;
 }
 
-/* 6B. Dim ONLY previous words when "Only dim previous words" is checked */
+/* 6B. Dim ONLY previous words */
 .reader-content.fx-dim-prev.has-active-focus .word-inner.word-prev {
   opacity: 0.4;
 }
@@ -148,7 +147,7 @@ body {
   opacity: var(--read-opacity, 0.22);
 }
 
-/* Live Dynamic Guidance jump charging bar on the held word */
+/* Live Dynamic Guidance jump charging bar */
 .word-jump-bar {
   position: absolute;
   left: 0;
@@ -162,12 +161,8 @@ body {
 }
 
 @keyframes jumpCharge {
-  from {
-    width: 0%;
-  }
-  to {
-    width: 100%;
-  }
+  from { width: 0%; }
+  to { width: 100%; }
 }
 
 /* Floating Live Gaze Debug Dot */
@@ -305,6 +300,53 @@ body {
   font-size: 0.85rem;
   color: #111827;
 }
+
+/* Live Camera Preview */
+.camera-preview-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.camera-preview-box {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background-color: #111827;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid #d1d5db;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.camera-preview-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.camera-preview-placeholder {
+  font-size: 0.78rem;
+  color: #9ca3af;
+}
+
+.preview-status-pill {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 999px;
+  color: #ffffff;
+  backdrop-filter: blur(4px);
+}
+.preview-status-pill.good { background-color: rgba(22, 163, 74, 0.85); }
+.preview-status-pill.warn { background-color: rgba(217, 119, 6, 0.85); }
+.preview-status-pill.bad  { background-color: rgba(220, 38, 38, 0.85); }
 
 .camera-alert {
   font-size: 0.78rem;

@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import functools
 import http.server
 import json
@@ -27,11 +28,11 @@ WS_HOST = 'localhost'
 WS_PORT = 8765
 HTTP_PORT = 8080
 BLINK_THRESHOLD = 0.5
-CALIBRATION_BURST_FRAMES = 15  # Frames averaged/used per calibration dot
-RIDGE_ALPHA = 1.5              # Higher = smoother/more stable, Lower = tighter fit
+CALIBRATION_BURST_FRAMES = 15  # Frames used per calibration dot
+RIDGE_ALPHA = 1.5              # Regularization strength
 ONE_EURO_MIN_CUTOFF = 0.9      # Lower = steadier when fixating on a word
 ONE_EURO_BETA = 2.5            # Higher = faster snap when jumping across words
-SHOW_CAMERA_PREVIEW = False    # Set True to inspect eye framing & lighting
+SHOW_CAMERA_PREVIEW = False    # Optional local OpenCV debug window
 
 
 def resource_path(relative_path: str) -> str:
@@ -51,7 +52,6 @@ def find_model_path() -> str:
         if os.path.exists(path):
             return path
 
-    # Last resort: search subdirectories of the script folder
     script_dir = os.path.dirname(os.path.abspath(__file__))
     for root, _, files in os.walk(script_dir):
         if 'face_landmarker.task' in files:
@@ -83,7 +83,6 @@ def open_camera_capture(index: int) -> cv2.VideoCapture:
         cap = cv2.VideoCapture(index, get_camera_backend())
 
     if cap.isOpened():
-        # Request 720p @ 60fps when supported for crisp eyes & low latency
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
         cap.set(cv2.CAP_PROP_FPS, 60)
@@ -171,7 +170,7 @@ class GazeRidgeModel:
         self.alpha = alpha
         self.mean = None
         self.std = None
-        self.weights = None  # shape (D + 1, 2)
+        self.weights = None
 
     @property
     def is_fitted(self) -> bool:
@@ -186,12 +185,11 @@ class GazeRidgeModel:
         N, D = X.shape
         mean = X.mean(axis=0)
         std = X.std(axis=0)
-        std[std < 1e-4] = 1.0  # Prevent blow-up for features that stayed constant
+        std[std < 1e-4] = 1.0
 
         Xn = (X - mean) / std
         Xb = np.hstack([Xn, np.ones((N, 1), dtype=np.float64)])
 
-        # Scale regularization proportionally to frames-per-dot; never penalize intercept
         effective_alpha = self.alpha * max(1.0, N / max(1, num_dots))
         penalty = effective_alpha * np.eye(D + 1, dtype=np.float64)
         penalty[-1, -1] = 0.0
@@ -204,7 +202,6 @@ class GazeRidgeModel:
         self.std = std
         self.weights = weights
 
-        # Report calibration fit accuracy across training samples
         preds = Xb @ weights
         err_x = float(np.mean(np.abs(preds[:, 0] - Y[:, 0])) * 100.0)
         err_y = float(np.mean(np.abs(preds[:, 1] - Y[:, 1])) * 100.0)
@@ -235,8 +232,8 @@ def compute_eye_relative_iris(p_c1, p_c2, p_iris, frame_w: int, frame_h: int):
     if eye_w < 1e-4:
         return 0.0, 0.0
 
-    ux, uy = dx / eye_w, dy / eye_w  # Rightward along eye corners
-    vx, vy = -uy, ux                 # Downward perpendicular to eye corners
+    ux, uy = dx / eye_w, dy / eye_w
+    vx, vy = -uy, ux
 
     mid_x = (left_c.x + right_c.x) * 0.5 * frame_w
     mid_y = (left_c.y + right_c.y) * 0.5 * frame_h
@@ -252,7 +249,6 @@ def compute_eye_relative_iris(p_c1, p_c2, p_iris, frame_w: int, frame_h: int):
 def extract_gaze_features(result, frame_w: int, frame_h: int):
     """
     Extracts a 10-element head-pose-compensated gaze feature vector + blink state.
-    Returns: (feature_vec or None, is_blinking: bool, debug_points: dict)
     """
     bs = {}
     if result.face_blendshapes:
@@ -268,14 +264,12 @@ def extract_gaze_features(result, frame_w: int, frame_h: int):
 
     lm = result.face_landmarks[0]
 
-    # Eye-relative iris offsets (both eyes)
     rel_x_a, rel_y_a = compute_eye_relative_iris(lm[33], lm[133], lm[468], frame_w, frame_h)
     rel_x_b, rel_y_b = compute_eye_relative_iris(lm[362], lm[263], lm[473], frame_w, frame_h)
 
     rel_x_avg = 0.5 * (rel_x_a + rel_x_b)
     rel_y_avg = 0.5 * (rel_y_a + rel_y_b)
 
-    # Neural gaze blendshapes (greatly improves vertical Y stability)
     bs_x = 0.5 * (
         (bs.get('eyeLookOutRight', 0.0) - bs.get('eyeLookInRight', 0.0))
         + (bs.get('eyeLookInLeft', 0.0) - bs.get('eyeLookOutLeft', 0.0))
@@ -285,7 +279,6 @@ def extract_gaze_features(result, frame_w: int, frame_h: int):
         + (bs.get('eyeLookDownRight', 0.0) - bs.get('eyeLookUpRight', 0.0))
     )
 
-    # 3D Head Pose (yaw & pitch in radians)
     yaw, pitch = 0.0, 0.0
     if result.facial_transformation_matrixes:
         mat = np.array(result.facial_transformation_matrixes[0], dtype=np.float64)
@@ -343,6 +336,13 @@ class EyeTrackerState:
         self.camera_error = None
         self.status_version = 0
 
+        # Live preview stream (~12 FPS JPEG for React UI)
+        self.preview_enabled = True
+        self.latest_preview_b64 = None
+        self.preview_frame_id = 0
+        self.preview_face_detected = False
+        self.preview_blinking = False
+
         # Feature buffer & Regression model
         self.feature_buffer = deque(maxlen=CALIBRATION_BURST_FRAMES)
         self.is_blinking = False
@@ -351,13 +351,33 @@ class EyeTrackerState:
         self.cal_dot_count = 0
         self.model = GazeRidgeModel(alpha=RIDGE_ALPHA)
 
-        # Adaptive One-Euro filters for smooth, snappy cursor
         self.filter_x = OneEuroFilter(min_cutoff=ONE_EURO_MIN_CUTOFF, beta=ONE_EURO_BETA)
         self.filter_y = OneEuroFilter(min_cutoff=ONE_EURO_MIN_CUTOFF, beta=ONE_EURO_BETA)
 
         self.smoothed_x = None
         self.smoothed_y = None
         self.frame_id = 0
+
+    def set_preview_enabled(self, enabled: bool):
+        with self.lock:
+            self.preview_enabled = bool(enabled)
+
+    def update_preview(self, b64_jpeg: str, face_detected: bool, is_blinking: bool):
+        with self.lock:
+            self.latest_preview_b64 = b64_jpeg
+            self.preview_face_detected = face_detected
+            self.preview_blinking = is_blinking
+            self.preview_frame_id += 1
+
+    def get_preview_snapshot(self):
+        with self.lock:
+            return (
+                self.preview_enabled,
+                self.preview_frame_id,
+                self.latest_preview_b64,
+                self.preview_face_detected,
+                self.preview_blinking,
+            )
 
     def refresh_cameras(self, auto_select_if_none=True):
         with self.lock:
@@ -391,6 +411,7 @@ class EyeTrackerState:
             self.camera_status = 'switching'
             self.camera_error = None
 
+            self.latest_preview_b64 = None
             self.model.reset()
             self.cal_X.clear()
             self.cal_Y.clear()
@@ -447,7 +468,6 @@ class EyeTrackerState:
                 print('[Calibration] Warning: Not enough stable face frames for this dot.')
                 return False
 
-            # Store the recent burst of non-blinking frames so Ridge sees real noise variance
             samples = list(self.feature_buffer)
             for feat in samples:
                 self.cal_X.append(feat)
@@ -532,6 +552,7 @@ def camera_tracking_loop(state: EyeTrackerState):
     cap = None
     last_timestamp_ms = 0
     consecutive_failures = 0
+    last_preview_time = 0.0
 
     try:
         while state.running:
@@ -594,23 +615,30 @@ def camera_tracking_loop(state: EyeTrackerState):
             features, is_blinking, debug_pts = extract_gaze_features(result, w, h)
             state.update_from_frame(features, is_blinking)
 
+            # Generate lightweight 320px preview frame (~12 FPS) for the React UI
+            now_perf = time.perf_counter()
+            if state.preview_enabled and (now_perf - last_preview_time) >= 0.085:
+                last_preview_time = now_perf
+                preview_w = 320
+                scale = preview_w / float(w)
+                preview_h = max(1, int(h * scale))
+                small = cv2.resize(frame, (preview_w, preview_h))
+
+                for pt in debug_pts.get('corners', []):
+                    cv2.circle(small, (int(pt[0] * scale), int(pt[1] * scale)), 2, (0, 180, 255), -1)
+                for pt in debug_pts.get('irises', []):
+                    cv2.circle(small, (int(pt[0] * scale), int(pt[1] * scale)), 3, (0, 255, 0), -1)
+
+                ok_jpg, buf = cv2.imencode('.jpg', small, [int(cv2.IMWRITE_JPEG_QUALITY), 65])
+                if ok_jpg:
+                    b64 = base64.b64encode(buf).decode('ascii')
+                    state.update_preview(b64, features is not None, is_blinking)
+
             if SHOW_CAMERA_PREVIEW:
                 for pt in debug_pts.get('corners', []):
-                    cv2.circle(frame, pt, 2, (255, 180, 0), -1)
+                    cv2.circle(frame, pt, 2, (0, 180, 255), -1)
                 for pt in debug_pts.get('irises', []):
                     cv2.circle(frame, pt, 3, (0, 255, 0), -1)
-                if 'pose' in debug_pts:
-                    yaw_d, pitch_d = debug_pts['pose']
-                    rx, ry = debug_pts['rel']
-                    cv2.putText(
-                        frame,
-                        f'RelIris: ({rx:+.2f}, {ry:+.2f})  Head: yaw={yaw_d:+.1f} pitch={pitch_d:+.1f}',
-                        (16, 32),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.65,
-                        (0, 255, 0),
-                        2,
-                    )
                 cv2.imshow('Eye Tracker Debug Preview', frame)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     state.running = False
@@ -652,6 +680,9 @@ async def handle_client(websocket, *args):
                 if 'index' in msg and msg['index'] is not None:
                     tracker_state.request_camera_switch(msg['index'])
 
+            elif msg_type == 'set_preview':
+                tracker_state.set_preview_enabled(bool(msg.get('enabled', True)))
+
             elif msg_type == 'calibrate_start':
                 tracker_state.reset_calibration()
 
@@ -679,9 +710,11 @@ async def handle_client(websocket, *args):
 async def broadcast_loop(state: EyeTrackerState):
     last_sent_frame_id = -1
     last_sent_status_version = -1
+    last_sent_preview_id = -1
 
     while state.running:
         if connected_clients:
+            # 1. Camera & calibration status changes
             status_ver, cam_payload = state.get_camera_state_payload()
             if status_ver != last_sent_status_version:
                 last_sent_status_version = status_ver
@@ -691,6 +724,7 @@ async def broadcast_loop(state: EyeTrackerState):
                     return_exceptions=True,
                 )
 
+            # 2. Live gaze coordinates
             frame_id, gx, gy, is_blinking, is_calibrated = state.get_gaze_snapshot()
             if (
                 is_calibrated
@@ -708,6 +742,21 @@ async def broadcast_loop(state: EyeTrackerState):
                 })
                 await asyncio.gather(
                     *(c.send(gaze_msg) for c in list(connected_clients)),
+                    return_exceptions=True,
+                )
+
+            # 3. Live camera preview frames (~12 FPS when enabled)
+            prev_on, prev_id, prev_b64, face_ok, prev_blink = state.get_preview_snapshot()
+            if prev_on and prev_b64 is not None and prev_id != last_sent_preview_id:
+                last_sent_preview_id = prev_id
+                prev_msg = json.dumps({
+                    'type': 'preview_frame',
+                    'image': prev_b64,
+                    'faceDetected': face_ok,
+                    'blinking': prev_blink,
+                })
+                await asyncio.gather(
+                    *(c.send(prev_msg) for c in list(connected_clients)),
                     return_exceptions=True,
                 )
 
