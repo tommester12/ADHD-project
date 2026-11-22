@@ -36,12 +36,12 @@ LIVELINK_CAMERA_INDEX = -100
 ARKIT6DOF_UDP_PORT = 11112
 ARKIT6DOF_CAMERA_INDEX = -101
 
-BLINK_THRESHOLD = 0.5
+BLINK_THRESHOLD = 0.72
 CALIBRATION_BURST_FRAMES = 15
 LINEAR_RIDGE_ALPHA = 1.5
-RBF_RIDGE_ALPHA = 0.25         # Lower = tighter warp to the 13 dots, Higher = smoother
-ONE_EURO_MIN_CUTOFF = 1.0      # Lower = steadier when fixating on a word
-ONE_EURO_BETA = 3.0            # Higher = snappier jumps between words
+RBF_RIDGE_ALPHA = 0.25
+ONE_EURO_MIN_CUTOFF = 1.0
+ONE_EURO_BETA = 3.0
 SHOW_CAMERA_PREVIEW = False
 
 
@@ -96,11 +96,13 @@ def get_camera_backend() -> int:
 
 def open_camera_capture(index: int) -> cv2.VideoCapture:
     if index >= 100:
-        cap = cv2.VideoCapture(index)
+        backend = (index // 100) * 100
+        device_id = index % 100
+        cap = cv2.VideoCapture(device_id, backend)
     else:
         cap = cv2.VideoCapture(index, get_camera_backend())
 
-    if cap.isOpened():
+    if cap.isOpened() and platform.system() != 'Darwin':
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
         cap.set(cv2.CAP_PROP_FPS, 60)
@@ -134,7 +136,6 @@ def discover_cameras(active_index=None, active_name=None):
                 cameras.append({'index': idx, 'name': f'Camera {idx}'})
                 cap.release()
 
-    # Expose both iPhone TrueDepth UDP receivers in the dropdown
     cameras.append({
         'index': ARKIT6DOF_CAMERA_INDEX,
         'name': f'iPhone 6-DoF ARKit App (UDP :{ARKIT6DOF_UDP_PORT})',
@@ -245,10 +246,6 @@ def render_livelink_preview_b64(telemetry, connected: bool, local_ip: str) -> st
 # --- CUSTOM 6-DoF ARKIT IOS APP (UDP :11112) ---
 
 def extract_arkit6dof_features(pkt: dict):
-    """
-    Computes exact 3D ray-to-screen-plane intersection (z=0) from full 6-DoF ARKit data
-    so head distance (oz) and head shift (ox, oy) are cancelled geometrically.
-    """
     ox = float(pkt.get('ox', 0.0))
     oy = float(pkt.get('oy', 0.0))
     oz = float(pkt.get('oz', -0.4))
@@ -351,14 +348,6 @@ class OneEuroFilter:
 
 
 class GazeKernelRidgeModel:
-    """
-    Hybrid Linear + Gaussian RBF Kernel Ridge Regression:
-      1. Standardized Linear Ridge fits global slopes & extrapolates smoothly.
-      2. RBF Kernel Ridge over the clean calibration dot centroids removes
-         nonlinear screen perspective / keystone curvature.
-      3. Separate drift_offset supports exact 1-dot right-click recalibration.
-    """
-
     def __init__(self, linear_alpha=LINEAR_RIDGE_ALPHA, rbf_alpha=RBF_RIDGE_ALPHA):
         self.linear_alpha = linear_alpha
         self.rbf_alpha = rbf_alpha
@@ -818,6 +807,8 @@ class EyeTrackerState:
             return True
 
     def update_from_frame(self, feature_vec, is_blinking: bool):
+        if feature_vec is not None and not np.all(np.isfinite(feature_vec)):
+            return
         with self.lock:
             self.is_blinking = is_blinking
             self.frame_id += 1
@@ -965,6 +956,8 @@ def camera_tracking_loop(state: EyeTrackerState):
                 if latest_packet is not None:
                     vals = decode_livelink_packet(latest_packet)
                     if vals is not None:
+                        if last_udp_packet_time == 0.0:
+                            print('[LiveLink] First UDP packet received!')
                         features, is_blinking, telemetry = extract_livelink_features(vals)
                         state.update_from_frame(features, is_blinking)
                         last_udp_packet_time = now_perf
@@ -995,13 +988,18 @@ def camera_tracking_loop(state: EyeTrackerState):
                 if latest_packet is not None:
                     try:
                         pkt = json.loads(latest_packet.decode('utf-8'))
+                        if last_udp_packet_time == 0.0:
+                            print(
+                                f'[6-DoF ARKit] First UDP packet received! '
+                                f'oz={pkt.get("oz")}, bl={pkt.get("bl")}, br={pkt.get("br")}'
+                            )
                         features, is_blinking, telemetry = extract_arkit6dof_features(pkt)
                         state.update_from_frame(features, is_blinking)
                         last_udp_packet_time = now_perf
                         last_udp_telemetry = telemetry
                         last_udp_blinking = is_blinking
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        print(f'[6-DoF ARKit] Parse error: {exc} | raw={latest_packet[:120]}')
                 else:
                     time.sleep(0.004)
 
