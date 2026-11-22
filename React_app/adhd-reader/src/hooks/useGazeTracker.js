@@ -13,6 +13,7 @@ export function useGazeTracker({ wsUrl = 'ws://localhost:8765' } = {}) {
   const wsRef = useRef(null);
   const listenersRef = useRef(new Set());
   const previewListenersRef = useRef(new Set());
+  const calAckListenersRef = useRef(new Set());
 
   const subscribeGaze = useCallback((callback) => {
     listenersRef.current.add(callback);
@@ -25,6 +26,13 @@ export function useGazeTracker({ wsUrl = 'ws://localhost:8765' } = {}) {
     previewListenersRef.current.add(callback);
     return () => {
       previewListenersRef.current.delete(callback);
+    };
+  }, []);
+
+  const subscribeCalibrationAck = useCallback((callback) => {
+    calAckListenersRef.current.add(callback);
+    return () => {
+      calAckListenersRef.current.delete(callback);
     };
   }, []);
 
@@ -85,6 +93,11 @@ export function useGazeTracker({ wsUrl = 'ws://localhost:8765' } = {}) {
             });
           } else if (data.type === 'preview_frame') {
             previewListenersRef.current.forEach((cb) => cb(data));
+          } else if (
+            data.type === 'calibration_point_ack' ||
+            data.type === 'recalibration_ack'
+          ) {
+            calAckListenersRef.current.forEach((cb) => cb(data));
           } else if (data.type === 'camera_state') {
             setCameras(data.cameras || []);
             setActiveCamera(data.activeCamera ?? null);
@@ -157,6 +170,7 @@ export function useGazeTracker({ wsUrl = 'ws://localhost:8765' } = {}) {
     refreshCameras,
     subscribeGaze,
     subscribePreview,
+    subscribeCalibrationAck,
     setPreviewEnabled,
     sendCommand,
   };

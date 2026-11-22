@@ -84,6 +84,7 @@ export default function App() {
 
   // Guided reading settings
   const [guidedMode, setGuidedMode] = useState(false);
+  const [lineLocked, setLineLocked] = useState(false);
   const [dynamicGuidance, setDynamicGuidance] = useState(false);
   const [dynamicJumpSeconds, setDynamicJumpSeconds] = useState(3);
   const [guidedResetKey, setGuidedResetKey] = useState(0);
@@ -121,6 +122,7 @@ export default function App() {
     refreshCameras,
     subscribeGaze,
     subscribePreview,
+    subscribeCalibrationAck,
     setPreviewEnabled,
     sendCommand,
   } = useGazeTracker({ wsUrl: 'ws://localhost:8765' });
@@ -139,6 +141,16 @@ export default function App() {
     if (enabled) {
       setGuidedResetKey((k) => k + 1);
     }
+  }, []);
+
+  const handleToggleDynamicGuidance = useCallback((enabled) => {
+    setDynamicGuidance(enabled);
+    if (enabled) setLineLocked(false);
+  }, []);
+
+  const handleToggleLineLocked = useCallback((enabled) => {
+    setLineLocked(enabled);
+    if (enabled) setDynamicGuidance(false);
   }, []);
 
   const handleResetGuided = useCallback(() => {
@@ -170,6 +182,7 @@ export default function App() {
         gazeTolerance={gazeTolerance}
         showGazeDot={showGazeDot}
         guidedMode={guidedMode}
+        lineLocked={lineLocked}
         dynamicGuidance={dynamicGuidance}
         dynamicJumpSeconds={dynamicJumpSeconds}
         guidedResetKey={guidedResetKey}
@@ -183,6 +196,9 @@ export default function App() {
         onGuidedProgress={handleGuidedProgress}
         subscribeGaze={subscribeGaze}
         onWordChange={handleWordChange}
+        sendCommand={sendCommand}
+        subscribeCalibrationAck={subscribeCalibrationAck}
+        inputMode={inputMode}
       />
 
       <ControlPanel
@@ -210,8 +226,10 @@ export default function App() {
         setShowGazeDot={setShowGazeDot}
         guidedMode={guidedMode}
         onToggleGuidedMode={handleToggleGuidedMode}
+        lineLocked={lineLocked}
+        setLineLocked={handleToggleLineLocked}
         dynamicGuidance={dynamicGuidance}
-        setDynamicGuidance={setDynamicGuidance}
+        setDynamicGuidance={handleToggleDynamicGuidance}
         dynamicJumpSeconds={dynamicJumpSeconds}
         setDynamicJumpSeconds={setDynamicJumpSeconds}
         onResetGuided={handleResetGuided}
@@ -250,6 +268,8 @@ export default function App() {
       {isCalibrating && (
         <CalibrationOverlay
           sendCommand={sendCommand}
+          subscribeCalibrationAck={subscribeCalibrationAck}
+          inputMode={inputMode}
           onComplete={() => setIsCalibrating(false)}
           onCancel={() => setIsCalibrating(false)}
         />

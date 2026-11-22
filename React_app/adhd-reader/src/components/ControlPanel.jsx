@@ -65,6 +65,8 @@ export default function ControlPanel({
   setShowGazeDot,
   guidedMode = false,
   onToggleGuidedMode,
+  lineLocked = false,
+  setLineLocked,
   dynamicGuidance = false,
   setDynamicGuidance,
   dynamicJumpSeconds = 3,
@@ -113,21 +115,18 @@ export default function ControlPanel({
     blinking: false,
   });
 
-  // Notify Python when toggling live preview on/off
   useEffect(() => {
     if (inputMode === 'websocket' && connectionStatus === 'connected' && setPreviewEnabled) {
       setPreviewEnabled(showPreview);
     }
   }, [inputMode, connectionStatus, showPreview, setPreviewEnabled]);
 
-  // Clear preview placeholder while switching cameras or disconnected
   useEffect(() => {
     if (connectionStatus !== 'connected' || cameraStatus === 'switching') {
       setPreviewInfo({ hasFrame: false, faceDetected: false, blinking: false });
     }
   }, [connectionStatus, cameraStatus]);
 
-  // Update <img> src directly via DOM ref (~12 FPS, zero parent re-renders)
   useEffect(() => {
     if (!subscribePreview || !showPreview || inputMode !== 'websocket') return;
 
@@ -243,7 +242,6 @@ export default function ControlPanel({
               </div>
             )}
 
-            {/* Live Camera Preview */}
             {cameras.length > 0 && (
               <div className="camera-preview-section">
                 <div className="camera-picker-header">
@@ -313,8 +311,11 @@ export default function ControlPanel({
           className="btn-primary full-width"
           onClick={onStartCalibration}
         >
-          Calibrate Eye Tracking (9-Point)
+          Calibrate Eye Tracking (13-Point)
         </button>
+        <span className="helper-tip">
+          Tip: Right-click any word in the text to quick-recalibrate drift on that word.
+        </span>
       </section>
 
       {/* Load Text */}
@@ -406,10 +407,35 @@ export default function ControlPanel({
               />
             </div>
 
-            <label className="checkbox-row">
+            <label
+              className={`checkbox-row ${dynamicGuidance ? 'disabled-option' : ''}`}
+              title={
+                dynamicGuidance
+                  ? 'Incompatible with Dynamic Guidance — uncheck Dynamic Guidance first'
+                  : 'Tracks X-axis only along the current line and sweeps to the next line'
+              }
+            >
+              <input
+                type="checkbox"
+                checked={lineLocked}
+                disabled={dynamicGuidance}
+                onChange={(e) => setLineLocked(e.target.checked)}
+              />
+              <span>Line-locked reading (X-axis only, best for webcams)</span>
+            </label>
+
+            <label
+              className={`checkbox-row ${lineLocked ? 'disabled-option' : ''}`}
+              title={
+                lineLocked
+                  ? 'Incompatible with Line-Locked Reading — uncheck Line-Locked first'
+                  : '1.5s backward alert and timed jump to any word'
+              }
+            >
               <input
                 type="checkbox"
                 checked={dynamicGuidance}
+                disabled={lineLocked}
                 onChange={(e) => {
                   setDynamicGuidance(e.target.checked);
                   if (e.target.checked) playStrayChime(strayVolume);
@@ -420,7 +446,7 @@ export default function ControlPanel({
               </span>
             </label>
 
-            {dynamicGuidance && (
+            {dynamicGuidance && !lineLocked && (
               <div className="slider-group">
                 <div className="slider-label">
                   <span>Jump Hold Time</span>

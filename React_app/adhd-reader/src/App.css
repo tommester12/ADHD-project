@@ -42,14 +42,12 @@ body {
   margin: 0 0 1.6em 0;
 }
 
-/* Fixed outer span keeps line breaks & bounding boxes locked */
 .word-wrapper {
   display: inline-block;
   padding: 0 0.04em;
   position: relative;
 }
 
-/* Inner span handles GPU-only translateX (parting) + scale (zoom) with zero reflow */
 .word-inner {
   display: inline-block;
   position: relative;
@@ -140,7 +138,7 @@ body {
   opacity: 0.4;
 }
 
-/* Guided Mode Read-Word Fade (always overrides Dim Surroundings) */
+/* Guided Mode Read-Word Fade */
 .reader-content .word-inner.word-read,
 .reader-content.fx-dim.has-active-focus .word-inner.word-read,
 .reader-content.fx-dim-prev.has-active-focus .word-inner.word-read {
@@ -219,6 +217,12 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: #6b7280;
+}
+
+.helper-tip {
+  font-size: 0.76rem;
+  color: #6b7280;
+  line-height: 1.35;
 }
 
 .segmented-control {
@@ -578,6 +582,11 @@ body {
   cursor: pointer;
 }
 
+.checkbox-row.disabled-option {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .panel-footer {
   margin-top: auto;
   padding-top: 12px;
@@ -594,41 +603,150 @@ body {
   border: 1px solid #e5e7eb;
 }
 
-/* --- CALIBRATION OVERLAY --- */
-.calibration-overlay {
+/* --- IN-PAGE WORD CALIBRATION & RIGHT-CLICK RECALIBRATION --- */
+.calibration-overlay.in-page {
   position: fixed;
   inset: 0;
-  background-color: #0b0f19;
-  color: #ffffff;
+  background-color: transparent;
   z-index: 2000;
 }
 
-.calibration-instructions {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  text-align: center;
-  max-width: 420px;
+.calibration-side-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 30%;
+  height: 100%;
+  background-color: rgba(15, 23, 42, 0.94);
+  color: #ffffff;
+  padding: 36px 28px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 14px;
+  box-shadow: -8px 0 28px rgba(0, 0, 0, 0.2);
 }
 
-.calibration-instructions h2 {
-  margin: 0 0 8px;
+.calibration-side-panel h2 {
+  margin: 0;
+  font-size: 1.35rem;
 }
 
-.calibration-instructions p {
+.calibration-side-panel p {
+  margin: 0;
   color: #cbd5e1;
-  margin: 0 0 18px;
+  line-height: 1.5;
+  font-size: 0.95rem;
+}
+
+.calibration-word-pill {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 0.9rem;
+  color: #e2e8f0;
+}
+
+.calibration-error {
+  color: #fca5a5 !important;
+  font-size: 0.88rem !important;
+  font-weight: 500;
 }
 
 .calibration-dot {
-  position: absolute;
-  width: 28px;
-  height: 28px;
+  position: fixed;
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
-  background-color: #ef4444;
-  border: 4px solid #ffffff;
+  background-color: rgba(239, 68, 68, 0.88);
+  border: 3px solid #ffffff;
   transform: translate(-50%, -50%);
   cursor: pointer;
-  box-shadow: 0 0 20px rgba(239, 68, 68, 0.75);
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.55), 0 0 18px rgba(239, 68, 68, 0.7);
+  z-index: 2010;
+}
+
+.calibration-dot.sampling {
+  background-color: #22c55e;
+  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.6), 0 0 24px rgba(34, 197, 94, 0.9);
+  animation: dotCapture var(--capture-ms, 650ms) ease-out forwards;
+}
+
+@keyframes dotCapture {
+  0% {
+    transform: translate(-50%, -50%) scale(1.25);
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(0.75);
+  }
+}
+
+/* Right-Click Context Menu on Words */
+.word-context-menu {
+  position: fixed;
+  z-index: 2050;
+  background-color: #ffffff;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.14);
+  min-width: 190px;
+}
+
+.context-menu-item {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 0.86rem;
+  font-weight: 500;
+  color: #111827;
+  cursor: pointer;
+}
+
+.context-menu-item:hover {
+  background-color: #eff6ff;
+  color: #1d4ed8;
+}
+
+/* Single-Word Quick Recalibration Overlay */
+.quick-recal-backdrop {
+  position: fixed;
+  inset: 0;
+  background-color: transparent;
+  z-index: 2005;
+}
+
+.quick-recal-prompt {
+  position: fixed;
+  transform: translateX(-50%);
+  background-color: #0f172a;
+  color: #ffffff;
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-size: 0.84rem;
+  font-weight: 500;
+  white-space: nowrap;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  z-index: 2015;
+}
+
+.quick-recal-error {
+  color: #fca5a5;
+  font-size: 0.76rem;
+  white-space: normal;
+  max-width: 260px;
+  text-align: center;
+}
+
+.quick-recal-cancel {
+  color: #93c5fd;
+  font-size: 0.75rem;
 }

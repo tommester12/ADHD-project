@@ -14,8 +14,7 @@ function getAudioContext() {
 }
 
 /**
- * Plays a gentle, non-startling chime when the user's gaze strays from the text.
- * Uses the built-in Web Audio API so no external sound files are needed.
+ * Plays a gentle, non-startling chime using the built-in Web Audio API.
  */
 export function playStrayChime(volume = 0.5) {
   const ctx = getAudioContext();
@@ -25,7 +24,6 @@ export function playStrayChime(volume = 0.5) {
   const osc = ctx.createOscillator();
   const gain = ctx.createGain();
 
-  // Gentle soft tone (C5 -> G4)
   osc.type = 'sine';
   osc.frequency.setValueAtTime(523.25, now);
   osc.frequency.exponentialRampToValueAtTime(392.0, now + 0.18);

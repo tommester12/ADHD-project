@@ -4,6 +4,7 @@ import { playStrayChime } from '../utils/soundAlert';
 const MIN_GUIDED_DWELL_MS = 80;
 const STRAY_COOLDOWN_MS = 2000;
 const DYNAMIC_BACKWARD_ALERT_MS = 1500;
+const QUICK_RECAL_MS = 650;
 
 function hexToRgb(hex) {
   const clean = (hex || '#2563eb').replace('#', '');
@@ -47,12 +48,6 @@ function getHighlightTints(hex) {
   };
 }
 
-/**
- * Computes pure-GPU horizontal shifts (px) for words on the same line(s)
- * as the zoomed word(s). Keeps the active word anchored at translateX(0),
- * gently pushing earlier words LEFT and later words RIGHT into the page margins
- * with zero line reflow and zero word overlap.
- */
 function computeLinePartingShifts(boxes, targetIndex, zoom1, zoom2, zoom3, previewNextWords) {
   const shifts = {};
   if (targetIndex === null || !boxes.length) return shifts;
@@ -150,12 +145,10 @@ function findWordAtPoint(x, y, boxes, tolerance) {
   for (let i = 0; i < boxes.length; i++) {
     const b = boxes[i];
 
-    // Tier 1: Direct hit inside actual DOM box
     if (x >= b.rawLeft && x <= b.rawRight && y >= b.rawTop && y <= b.rawBottom) {
       return b.index;
     }
 
-    // Tier 2: Hit inside expanded virtual hitbox (larger for 1-4 letter words)
     if (x >= b.left && x <= b.right && y >= b.top && y <= b.bottom) {
       const centerDist = Math.hypot(x - b.cx, (y - b.cy) * 1.4);
       if (centerDist < expandedBestCenterDist) {
@@ -164,7 +157,6 @@ function findWordAtPoint(x, y, boxes, tolerance) {
       }
     }
 
-    // Tier 3: Nearest expanded box within gaze tolerance
     const dx = Math.max(b.left - x, 0, x - b.right);
     const dy = Math.max(b.top - y, 0, y - b.bottom);
     const weightedDist = Math.hypot(dx, dy * 1.4);
@@ -176,6 +168,39 @@ function findWordAtPoint(x, y, boxes, tolerance) {
   }
 
   return expandedMatchIndex !== null ? expandedMatchIndex : nearestIndex;
+}
+
+function findWordOnLineByX(x, boxes, targetIndex, tolerance) {
+  const targetBox = boxes[targetIndex];
+  if (!targetBox) return null;
+
+  const lineHeight = Math.max(12, targetBox.rawBottom - targetBox.rawTop);
+  let bestIndex = null;
+  let bestDist = Infinity;
+
+  for (let i = 0; i < boxes.length; i++) {
+    const b = boxes[i];
+    if (Math.abs(b.cy - targetBox.cy) >= lineHeight * 0.6) continue;
+
+    if (x >= b.rawLeft && x <= b.rawRight) return b.index;
+
+    if (x >= b.left && x <= b.right) {
+      const centerDist = Math.abs(x - b.cx);
+      if (centerDist < bestDist) {
+        bestDist = centerDist;
+        bestIndex = b.index;
+      }
+      continue;
+    }
+
+    const dx = Math.max(b.left - x, 0, x - b.right);
+    if (dx <= tolerance && dx < bestDist) {
+      bestDist = dx;
+      bestIndex = b.index;
+    }
+  }
+
+  return bestIndex;
 }
 
 export default function TextReader({
@@ -192,6 +217,7 @@ export default function TextReader({
   gazeTolerance,
   showGazeDot,
   guidedMode,
+  lineLocked = false,
   dynamicGuidance,
   dynamicJumpSeconds = 3,
   guidedResetKey,
@@ -205,6 +231,9 @@ export default function TextReader({
   onGuidedProgress,
   subscribeGaze,
   onWordChange,
+  sendCommand,
+  subscribeCalibrationAck,
+  inputMode,
 }) {
   const containerRef = useRef(null);
   const gazeDotRef = useRef(null);
@@ -222,8 +251,9 @@ export default function TextReader({
   const hasReadCurrentRef = useRef(false);
   const lastGazeWordRef = useRef(null);
   const lastGazeTimeRef = useRef(null);
+  const lineEnteredAtRef = useRef(0);
 
-  // Dynamic guidance trackers (1.5s backward alert + configurable jump)
+  // Dynamic guidance trackers
   const backwardStartRef = useRef(null);
   const backwardAlertFiredRef = useRef(false);
   const dynamicTargetRef = useRef(null);
@@ -238,11 +268,114 @@ export default function TextReader({
   const strayStartRef = useRef(null);
   const lastChimeTimeRef = useRef(0);
 
+  // Right-click context menu & single-word quick recalibration
+  const [contextMenu, setContextMenu] = useState(null);
+  const [quickRecal, setQuickRecal] = useState(null);
+  const quickRecalRef = useRef(null);
+  quickRecalRef.current = quickRecal;
+  const quickRecalTimerRef = useRef(null);
+  const quickRecalFallbackRef = useRef(null);
+
   const updatePendingJump = useCallback((idx) => {
     if (pendingJumpIndexRef.current !== idx) {
       pendingJumpIndexRef.current = idx;
       setPendingJumpIndex(idx);
     }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      clearTimeout(quickRecalTimerRef.current);
+      clearTimeout(quickRecalFallbackRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const closeMenu = () => setContextMenu(null);
+    const onKey = (e) => {
+      if (e.code === 'Escape') setContextMenu(null);
+    };
+    window.addEventListener('click', closeMenu);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('click', closeMenu);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [contextMenu]);
+
+  useEffect(() => {
+    if (!subscribeCalibrationAck) return;
+    return subscribeCalibrationAck((ack) => {
+      if (ack.type !== 'recalibration_ack') return;
+      if (!quickRecalRef.current) return;
+      clearTimeout(quickRecalFallbackRef.current);
+
+      if (ack.ok) {
+        setQuickRecal(null);
+      } else {
+        setQuickRecal((prev) =>
+          prev
+            ? { ...prev, sampling: false, error: ack.reason || 'Recalibration failed.' }
+            : null
+        );
+      }
+    });
+  }, [subscribeCalibrationAck]);
+
+  const triggerQuickRecalCapture = useCallback(() => {
+    const active = quickRecalRef.current;
+    if (!active || active.sampling) return;
+
+    setQuickRecal((prev) => (prev ? { ...prev, sampling: true, error: '' } : null));
+
+    const sentBegin = sendCommand?.({
+      type: 'recalibrate_point_begin',
+      targetX: active.px / window.innerWidth,
+      targetY: active.py / window.innerHeight,
+    });
+
+    quickRecalTimerRef.current = setTimeout(() => {
+      const sentEnd = sendCommand?.({ type: 'recalibrate_point_end' });
+      if (inputMode !== 'websocket' || !sentBegin || !sentEnd) {
+        setQuickRecal(null);
+      } else {
+        quickRecalFallbackRef.current = setTimeout(() => {
+          setQuickRecal(null);
+        }, 1000);
+      }
+    }, QUICK_RECAL_MS);
+  }, [sendCommand, inputMode]);
+
+  useEffect(() => {
+    if (!quickRecal) return;
+    const onKeyDown = (e) => {
+      if (e.code === 'Space') {
+        e.preventDefault();
+        triggerQuickRecalCapture();
+      } else if (e.code === 'Escape') {
+        clearTimeout(quickRecalTimerRef.current);
+        clearTimeout(quickRecalFallbackRef.current);
+        setQuickRecal(null);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [quickRecal, triggerQuickRecalCapture]);
+
+  const handleReaderContextMenu = useCallback((e) => {
+    const wordEl = e.target.closest('[data-word-index]');
+    if (!wordEl) return;
+
+    e.preventDefault();
+    const r = wordEl.getBoundingClientRect();
+    setContextMenu({
+      menuX: e.clientX,
+      menuY: e.clientY,
+      word: wordEl.textContent?.trim() || 'this word',
+      px: (r.left + r.right) / 2,
+      py: (r.top + r.bottom) / 2,
+    });
   }, []);
 
   const { paragraphs, wordTexts } = useMemo(() => {
@@ -280,7 +413,6 @@ export default function TextReader({
     [effectColors.underline]
   );
 
-  // Derived zoom tiers from the Zoom Strength slider
   const zoom1 = zoomScale;
   const zoom2 = Number((1 + (zoomScale - 1) * 0.55).toFixed(3));
   const zoom3 = Number((1 + (zoomScale - 1) * 0.25).toFixed(3));
@@ -312,7 +444,6 @@ export default function TextReader({
     [totalWords, wordTexts, onGuidedProgress, onWordChange, updatePendingJump]
   );
 
-  // Measure bounding boxes & expand virtual hitboxes for short words (1-4 letters)
   const measureWordBoxes = useCallback(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -365,7 +496,6 @@ export default function TextReader({
     setBoxesVersion((v) => v + 1);
   }, [wordTexts]);
 
-  // Reset progress when text changes, guided mode toggles, or Reset is clicked
   useEffect(() => {
     activeIndexRef.current = null;
     setActiveWordIndex(null);
@@ -410,7 +540,6 @@ export default function TextReader({
     updatePendingJump,
   ]);
 
-  // Auto-Pace timer for Guided Reading Mode
   useEffect(() => {
     if (!guidedMode || !autoPace || autoPacePaused || totalWords === 0) return;
 
@@ -428,9 +557,8 @@ export default function TextReader({
     return () => clearInterval(timer);
   }, [guidedMode, autoPace, autoPacePaused, autoPaceWpm, totalWords, setGuidedStep]);
 
-  // Combined timer for Dynamic Guidance (1.5s backward alert + configurable jump) & Gaze-Stray Alerts
   useEffect(() => {
-    const needsMonitor = strayAlertEnabled || (guidedMode && dynamicGuidance);
+    const needsMonitor = strayAlertEnabled || (guidedMode && dynamicGuidance && !lineLocked);
     if (!needsMonitor) {
       strayStartRef.current = null;
       backwardStartRef.current = null;
@@ -444,7 +572,7 @@ export default function TextReader({
     const dynamicJumpMs = Math.max(500, Math.round(dynamicJumpSeconds * 1000));
 
     const timer = setInterval(() => {
-      if (!isInsideReaderRef.current || isBlinkingRef.current) {
+      if (!isInsideReaderRef.current || isBlinkingRef.current || quickRecalRef.current) {
         strayStartRef.current = null;
         backwardStartRef.current = null;
         backwardAlertFiredRef.current = false;
@@ -456,8 +584,7 @@ export default function TextReader({
 
       const now = performance.now();
 
-      // 1. Dynamic Guidance Checks
-      if (guidedMode && dynamicGuidance) {
+      if (guidedMode && dynamicGuidance && !lineLocked) {
         if (
           backwardStartRef.current !== null &&
           !backwardAlertFiredRef.current &&
@@ -481,7 +608,6 @@ export default function TextReader({
         }
       }
 
-      // 2. General Gaze-Stray Alert
       if (!strayAlertEnabled) return;
       if (guidedMode && guidedIndexRef.current >= totalWords) {
         strayStartRef.current = null;
@@ -510,13 +636,13 @@ export default function TextReader({
     strayVolume,
     guidedMode,
     dynamicGuidance,
+    lineLocked,
     dynamicJumpSeconds,
     totalWords,
     setGuidedStep,
     updatePendingJump,
   ]);
 
-  // Gently auto-scroll to keep the guided word comfortably in view
   useEffect(() => {
     if (!guidedMode || guidedIndex >= totalWords) return;
 
@@ -537,7 +663,6 @@ export default function TextReader({
     }
   }, [guidedMode, guidedIndex, totalWords]);
 
-  // Re-measure bounding boxes whenever layout or typography changes
   useLayoutEffect(() => {
     measureWordBoxes();
 
@@ -556,7 +681,6 @@ export default function TextReader({
     return () => resizeObserver.disconnect();
   }, [paragraphs, fontSize, fontFamily, fontWeight, fontStyle, measureWordBoxes]);
 
-  // Subscribe to real-time gaze / mouse coordinates
   useEffect(() => {
     return subscribeGaze(({ x, y, blinking }) => {
       isBlinkingRef.current = blinking;
@@ -566,7 +690,7 @@ export default function TextReader({
         gazeDotRef.current.style.opacity = blinking ? '0.35' : '0.85';
       }
 
-      if (blinking) return;
+      if (blinking || quickRecalRef.current) return;
 
       const container = containerRef.current;
       if (!container) return;
@@ -590,7 +714,117 @@ export default function TextReader({
 
       const now = performance.now();
 
-      // --- GUIDED READING MODE ---
+      // --- LINE-LOCKED GUIDED READING (X-axis only + return sweep) ---
+      if (guidedMode && lineLocked) {
+        const currentTarget = guidedIndexRef.current;
+        const boxes = wordBoxesRef.current;
+        const currBox = boxes[currentTarget];
+
+        if (currentTarget >= totalWords || !currBox) {
+          strayStartRef.current = null;
+          return;
+        }
+
+        // Visually snap the green gaze dot onto the active line's Y so line-lock is clear
+        if (gazeDotRef.current && showGazeDot && isInsideReader) {
+          const lockedScreenY = rect.top + currBox.cy - container.scrollTop;
+          gazeDotRef.current.style.transform = `translate3d(${x}px, ${lockedScreenY}px, 0)`;
+          gazeDotRef.current.style.opacity = blinking ? '0.35' : '0.85';
+        }
+
+        if (!isInsideReader) {
+          strayStartRef.current = null;
+          return;
+        }
+
+        if (autoPace && !autoPacePaused) {
+          return;
+        }
+
+        const contentX = x - rect.left + container.scrollLeft;
+        const lineH = Math.max(12, currBox.rawBottom - currBox.rawTop);
+
+        // Find start & end word indices of the current visual line
+        let lineStartIdx = currentTarget;
+        while (
+          lineStartIdx > 0 &&
+          Math.abs(boxes[lineStartIdx - 1].cy - currBox.cy) < lineH * 0.6
+        ) {
+          lineStartIdx--;
+        }
+        let lineEndIdx = currentTarget;
+        while (
+          lineEndIdx + 1 < totalWords &&
+          Math.abs(boxes[lineEndIdx + 1].cy - currBox.cy) < lineH * 0.6
+        ) {
+          lineEndIdx++;
+        }
+
+        const lineLeftX = boxes[lineStartIdx].rawLeft;
+        const lineRightX = boxes[lineEndIdx].rawRight;
+        const lineWidth = Math.max(1, lineRightX - lineLeftX);
+
+        // Match using X coordinate ONLY along the current line
+        const xMatch = findWordOnLineByX(
+          contentX,
+          boxes,
+          currentTarget,
+          Math.max(gazeTolerance, 40)
+        );
+
+        // Stray alert check along this line
+        const isNearCurrentOrAhead =
+          contentX >= currBox.left - Math.max(gazeTolerance, 50) &&
+          contentX <= lineRightX + Math.max(gazeTolerance, 80);
+        if (isNearCurrentOrAhead) {
+          strayStartRef.current = null;
+        } else if (strayStartRef.current === null) {
+          strayStartRef.current = now;
+        }
+
+        // Brief grace period right after jumping to a new line so momentum doesn't skip word 1
+        if (now - lineEnteredAtRef.current < 220) {
+          return;
+        }
+
+        // 1. Return-sweep detection: near the end of the line + eyes sweep back to left third
+        const isNearEndOfLine = currentTarget >= lineEndIdx - 1;
+        const hasNextLine = lineEndIdx + 1 < totalWords;
+        if (isNearEndOfLine && hasNextLine) {
+          const sweptBackLeft = contentX <= lineLeftX + lineWidth * 0.32;
+          if (sweptBackLeft) {
+            lineEnteredAtRef.current = now;
+            setGuidedStep(lineEndIdx + 1);
+            return;
+          }
+        }
+
+        // 2. Final word of the entire text
+        if (currentTarget === totalWords - 1) {
+          if (xMatch === currentTarget || contentX >= currBox.rawLeft) {
+            if (lastGazeWordRef.current === currentTarget && lastGazeTimeRef.current !== null) {
+              currentDwellMsRef.current += now - lastGazeTimeRef.current;
+            }
+            lastGazeWordRef.current = currentTarget;
+            lastGazeTimeRef.current = now;
+            if (currentDwellMsRef.current >= 350 || contentX > currBox.rawRight + 50) {
+              setGuidedStep(totalWords);
+            }
+          }
+          return;
+        }
+
+        // 3. Smooth forward-only ratchet across the current line (never freezes on overshoots)
+        if (xMatch !== null && xMatch > currentTarget && xMatch <= lineEndIdx) {
+          const nextStep = xMatch - currentTarget <= 2 ? xMatch : currentTarget + 1;
+          setGuidedStep(nextStep);
+        } else if (contentX > currBox.rawRight + 12 && currentTarget < lineEndIdx) {
+          setGuidedStep(currentTarget + 1);
+        }
+        return;
+      }
+
+      // --- STANDARD / DYNAMIC GUIDED READING MODE ---
       if (guidedMode) {
         const currentTarget = guidedIndexRef.current;
 
@@ -712,6 +946,7 @@ export default function TextReader({
     gazeTolerance,
     showGazeDot,
     guidedMode,
+    lineLocked,
     dynamicGuidance,
     autoPace,
     autoPacePaused,
@@ -729,7 +964,6 @@ export default function TextReader({
       : null
     : activeWordIndex;
 
-  // Compute anchor-parting horizontal shifts when Zoom is active
   const lineShifts = useMemo(() => {
     if (!effects.zoom || currentTargetIndex === null) return {};
     return computeLinePartingShifts(
@@ -761,6 +995,7 @@ export default function TextReader({
 
       <article
         className={effectClasses}
+        onContextMenu={handleReaderContextMenu}
         style={{
           fontSize: `${fontSize}px`,
           fontFamily,
@@ -809,7 +1044,7 @@ export default function TextReader({
                     isRead={isRead}
                     isBeforeCurrent={isBeforeCurrent}
                     isJumpCharging={
-                      guidedMode && dynamicGuidance && pendingJumpIndex === index
+                      guidedMode && dynamicGuidance && !lineLocked && pendingJumpIndex === index
                     }
                     shiftX={lineShifts[index] || 0}
                   />{' '}
@@ -819,6 +1054,74 @@ export default function TextReader({
           </p>
         ))}
       </article>
+
+      {/* Right-Click Context Menu */}
+      {contextMenu && (
+        <div
+          className="word-context-menu"
+          style={{ left: `${contextMenu.menuX}px`, top: `${contextMenu.menuY}px` }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            type="button"
+            className="context-menu-item"
+            onClick={() => {
+              const target = contextMenu;
+              setContextMenu(null);
+              setQuickRecal({
+                word: target.word,
+                px: target.px,
+                py: target.py,
+                sampling: false,
+                error: '',
+              });
+            }}
+          >
+            Recalibrate on &ldquo;{contextMenu.word}&rdquo;
+          </button>
+        </div>
+      )}
+
+      {/* Single-Word Quick Recalibration Dot & Prompt */}
+      {quickRecal && (
+        <div className="quick-recal-backdrop">
+          <div
+            className="quick-recal-prompt"
+            style={{
+              left: `${quickRecal.px}px`,
+              top: `${quickRecal.py < 110 ? quickRecal.py + 46 : quickRecal.py - 56}px`,
+            }}
+          >
+            <span>
+              {quickRecal.sampling
+                ? 'Capturing — keep looking at the dot...'
+                : 'Press SPACE when you are looking at it'}
+            </span>
+            {quickRecal.error && (
+              <div className="quick-recal-error">{quickRecal.error}</div>
+            )}
+            <button
+              type="button"
+              className="btn-link quick-recal-cancel"
+              onClick={() => setQuickRecal(null)}
+            >
+              Cancel (Esc)
+            </button>
+          </div>
+
+          <button
+            type="button"
+            className={`calibration-dot word-dot ${quickRecal.sampling ? 'sampling' : ''}`}
+            style={{
+              left: `${quickRecal.px}px`,
+              top: `${quickRecal.py}px`,
+              '--capture-ms': `${QUICK_RECAL_MS}ms`,
+            }}
+            onClick={triggerQuickRecalCapture}
+            aria-label="Quick recalibration target"
+          />
+        </div>
+      )}
     </main>
   );
 }
